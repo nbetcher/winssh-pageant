@@ -6,9 +6,6 @@ on:
       releaseVersion:
         description: 'Release Version'
         required: true
-      prevVersion:
-        description: 'Previous Tag'
-        required: true
 jobs:
   build:
     name: Build
@@ -78,22 +75,12 @@ jobs:
       with:
         name: checksums
 
-    - name: Build Changelog
-      id: build_changelog
-      uses: heinrichreimer/github-changelog-generator-action@v2.4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        sinceTag: ${{ github.event.inputs.prevVersion }}
-
-    - name: Merge Body
-      run: |
-        echo "${{ steps.build_changelog.outputs.changelog}}" > changelog.md
-        cat checksums.md >> changelog.md
-
     - name: Release
       uses: softprops/action-gh-release@v2
       with:
-        body_path: changelog.md
+        # The checksums are prepended to GitHub's auto-generated release notes.
+        body_path: checksums.md
+        generate_release_notes: true
         draft: true
         name: Release ${{ github.event.inputs.releaseVersion }}
         tag_name: ${{ github.event.inputs.releaseVersion }}
