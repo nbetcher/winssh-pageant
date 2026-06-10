@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package pageant
 
@@ -27,11 +26,17 @@ import (
 	"github.com/ndbeals/winssh-pageant/openssh"
 )
 
-var defaultHandlerFunc = func(p *Pageant, result []byte) ([]byte, error) {
-	return openssh.QueryAgent(p.SSHAgentPipe, result)
+func defaultHandlerFunc(p *Pageant, request []byte) ([]byte, error) {
+	return openssh.QueryAgent(p.SSHAgentPipe, request)
 }
 
 func (p *Pageant) Run() {
+	// A nil handler (e.g. New(..., nil), WithPageantRequestHandler(nil), or a
+	// bare &Pageant{}) would be called as a nil func from the window procedure
+	// and the pipe goroutines; fall back to the default rather than crash.
+	if p.PageantRequestHandler == nil {
+		p.PageantRequestHandler = defaultHandlerFunc
+	}
 
 	err := win.FixConsoleIfNeeded()
 	if err != nil {
@@ -54,22 +59,16 @@ func (p *Pageant) Run() {
 
 	pageantWindow := p.createPageantWindow()
 	if pageantWindow == 0 {
-		log.Println(fmt.Errorf("CreateWindowEx failed: %v", win.GetLastError()))
+		log.Println(fmt.Errorf("createPageantWindow failed: %v", win.GetLastError()))
 		return
 	}
 
-	hglobal := win.GlobalAlloc(0, unsafe.Sizeof(win.MSG{}))
-	//nolint:gosec
-	msg := (*win.MSG)(unsafe.Pointer(hglobal))
-
 	// main message loop
-	for win.GetMessage(msg, pageantWindow, 0, 0) > 0 {
-		win.TranslateMessage(msg)
-		win.DispatchMessage(msg)
+	var msg win.MSG
+	for win.GetMessage(&msg, pageantWindow, 0, 0) > 0 {
+		win.TranslateMessage(&msg)
+		win.DispatchMessage(&msg)
 	}
-
-	// Explicitly release the global memory handle
-	win.GlobalFree(hglobal)
 }
 
 const (
@@ -166,79 +165,101 @@ func (p *Pageant) createPageantWindow() win.HWND {
 func (p *Pageant) wndProc(hWnd win.HWND, message uint32, wParam uintptr, lParam uintptr) uintptr {
 	switch message {
 	case win.WM_COPYDATA:
-		{
-			copyData := (*copyDataStruct)(unsafe.Pointer(lParam))
-			if copyData.dwData != agentCopyDataID {
-				return 0
-			}
-
-			fileMap, err := openFileMap(FILE_MAP_ALL_ACCESS, 0, copyData.lpData)
-			if err != nil {
-				log.Println(err)
-				return 0
-			}
-			defer windows.CloseHandle(fileMap)
-
-			// check security
-			ourself, err := security.GetUserSID()
-			if err != nil {
-				log.Println(err)
-				return 0
-			}
-			ourself2, err := security.GetDefaultSID()
-			if err != nil {
-				log.Println(err)
-				return 0
-			}
-			mapOwner, err := security.GetHandleSID(fileMap)
-			if err != nil {
-				log.Println(err)
-				return 0
-			}
-			if !windows.EqualSid(mapOwner, ourself) && !windows.EqualSid(mapOwner, ourself2) {
-				return 0
-			}
-
-			// Passed security checks, copy data
-			sharedMemory, err := windows.MapViewOfFile(fileMap, FILE_MAP_WRITE, 0, 0, 0)
-			if err != nil {
-				log.Println(err)
-				return 0
-			}
-			defer windows.UnmapViewOfFile(sharedMemory)
-
-			sharedMemoryArray := (*[openssh.AgentMaxMessageLength]byte)(unsafe.Pointer(sharedMemory))
-
-			size := binary.BigEndian.Uint32(sharedMemoryArray[:4]) + 4 // +4 for the size uint itself
-			if size > openssh.AgentMaxMessageLength {
-				return 0
-			}
-
-			// Query the windows OpenSSH agent via the windows named pipe
-			result, err := p.PageantRequestHandler(p, sharedMemoryArray[:size])
-			if err != nil {
-				log.Printf("Error in PageantRequestHandler: %+v\n", err)
-				return 0
-			}
-			copy(sharedMemoryArray[:], result)
-
-			// success, explicitly Clean up some resources (better to be certain it get's GC'd)
-			ourself = nil
-			ourself2 = nil
-			mapOwner = nil
-			sharedMemoryArray = nil
-			result = nil
-
-			return 1
-		}
+		return p.handleCopyData(lParam)
 	case win.WM_DESTROY, win.WM_CLOSE, win.WM_QUIT, win.WM_QUERYENDSESSION:
-		{ // Handle system shutdowns and process sigterms etc
-			win.PostQuitMessage(0)
-			return 0
-		}
+		// Handle system shutdowns and process sigterms etc
+		win.PostQuitMessage(0)
+		return 0
 	}
 
 	return win.DefWindowProc(hWnd, message, wParam, lParam)
+}
+
+// handleCopyData services a Pageant WM_COPYDATA request: it validates the
+// sender, maps the client-supplied shared memory, forwards the request to the
+// handler, and writes the reply back into the same buffer.
+func (p *Pageant) handleCopyData(lParam uintptr) uintptr {
+	copyData := (*copyDataStruct)(unsafe.Pointer(lParam))
+	if copyData.dwData != agentCopyDataID {
+		return 0
+	}
+
+	fileMap, err := openFileMap(FILE_MAP_ALL_ACCESS, 0, copyData.lpData)
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+	defer windows.CloseHandle(fileMap)
+
+	// check security
+	ourself, err := security.GetUserSID()
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+	ourself2, err := security.GetDefaultSID()
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+	mapOwner, err := security.GetHandleSID(fileMap)
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+	if !windows.EqualSid(mapOwner, ourself) && !windows.EqualSid(mapOwner, ourself2) {
+		return 0
+	}
+
+	// Passed security checks, copy data
+	sharedMemory, err := windows.MapViewOfFile(fileMap, FILE_MAP_WRITE, 0, 0, 0)
+	if err != nil {
+		log.Println(err)
+		return 0
+	}
+	defer windows.UnmapViewOfFile(sharedMemory)
+
+	// The requesting client controls the size of the mapped region, which may be
+	// smaller than AgentMaxMessageLength. Query the actual size so we never read
+	// from or write past the mapped view.
+	var memInfo windows.MemoryBasicInformation
+	if err := windows.VirtualQuery(sharedMemory, &memInfo, unsafe.Sizeof(memInfo)); err != nil {
+		log.Println(err)
+		return 0
+	}
+	mappedLen := memInfo.RegionSize
+	if mappedLen > openssh.AgentMaxResponseLength {
+		mappedLen = openssh.AgentMaxResponseLength
+	}
+	if mappedLen < 4 {
+		return 0
+	}
+	sharedMemoryArray := unsafe.Slice((*byte)(unsafe.Pointer(sharedMemory)), mappedLen)
+
+	// msgLen is the client-declared request length. Validate it against the
+	// mapped size BEFORE adding the 4-byte prefix, so the addition cannot wrap
+	// (uint32, and uintptr is 32-bit on the 386 build). mappedLen >= 4 here.
+	msgLen := binary.BigEndian.Uint32(sharedMemoryArray[:4])
+	if uintptr(msgLen) > mappedLen-4 {
+		return 0
+	}
+	size := msgLen + 4 // +4 for the size uint itself
+
+	// Query the windows OpenSSH agent via the windows named pipe
+	result, err := p.PageantRequestHandler(p, sharedMemoryArray[:size])
+	if err != nil {
+		log.Printf("Error in PageantRequestHandler: %+v\n", err)
+		return 0
+	}
+	// The reply is written back into the client's buffer. Fail rather than return
+	// an empty reply (which would leave the client's own request in shared
+	// memory) or one that does not fit the mapping.
+	if len(result) == 0 || uintptr(len(result)) > mappedLen {
+		return 0
+	}
+	copy(sharedMemoryArray, result)
+
+	return 1
 }
 
 func capiObfuscateString(realname string) string {
@@ -265,9 +286,14 @@ func (p *Pageant) pipeProxy() {
 	currentUser, err := user.Current()
 	if err != nil {
 		log.Println(err)
+		return
 	}
 
-	namePart := strings.Split(currentUser.Username, `\`)[1]
+	// Username is typically "DOMAIN\user" or "MACHINE\user"; fall back to the
+	// whole string when there is no domain/host prefix (otherwise indexing the
+	// split result would panic).
+	nameParts := strings.Split(currentUser.Username, `\`)
+	namePart := nameParts[len(nameParts)-1]
 	pipeName := fmt.Sprintf(agentPipeName, namePart, capiObfuscateString(wndClassName))
 	listener, err := winio.ListenPipe(pipeName, nil)
 	if err != nil {
@@ -298,6 +324,13 @@ func (p *Pageant) pipeListen(pageantConn net.Conn) {
 		}
 
 		bufferLen := binary.BigEndian.Uint32(lenBuf)
+		// Reject oversized requests before allocating; bufferLen is read from
+		// the client and would otherwise allow an unbounded (up to ~4 GiB)
+		// allocation per message.
+		if bufferLen > openssh.AgentMaxMessageLength {
+			log.Printf("Pipe: request length %d exceeds maximum %d\n", bufferLen, openssh.AgentMaxMessageLength)
+			return
+		}
 		readBuf := make([]byte, bufferLen)
 		_, err = io.ReadFull(reader, readBuf)
 		if err != nil {
@@ -307,6 +340,10 @@ func (p *Pageant) pipeListen(pageantConn net.Conn) {
 		result, err := p.PageantRequestHandler(p, append(lenBuf, readBuf...))
 		if err != nil {
 			log.Printf("Pipe: Error in PageantRequestHandler: %+v\n", err)
+			return
+		}
+		if len(result) == 0 {
+			log.Println("Pipe: empty result from PageantRequestHandler")
 			return
 		}
 

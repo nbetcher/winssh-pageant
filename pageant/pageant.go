@@ -2,14 +2,23 @@ package pageant
 
 import "log"
 
-type PageantRequestHandler func(p *Pageant, result []byte) ([]byte, error)
+// DefaultSSHAgentPipe is the default named pipe for the Windows OpenSSH agent.
+const DefaultSSHAgentPipe = `\\.\pipe\openssh-ssh-agent`
+
+// PageantRequestHandler handles an incoming pageant request. The request is the
+// raw agent message including its 4-byte big-endian length prefix; the returned
+// slice must be the complete reply, likewise including its length prefix.
+type PageantRequestHandler func(p *Pageant, request []byte) ([]byte, error)
 
 type Pageant struct {
-	SSHAgentPipe string // pipe for windows openssh agent (e.g \\.\pipe\openssh-ssh-agent)
-	pageantPipe  bool   // enable pageant named pipe proxying (not the same as the windows openssh pipe)
+	// SSHAgentPipe is the pipe for the windows openssh agent (e.g \\.\pipe\openssh-ssh-agent).
+	// Set it before calling Run; mutating it afterwards races with the request handlers.
+	SSHAgentPipe string
+	pageantPipe  bool // enable pageant named pipe proxying (not the same as the windows openssh pipe)
 
-	// This function is called when an incoming pageant key request is received.
-	// The result of the function is sent back to the requesting client.
+	// PageantRequestHandler is called when an incoming pageant key request is
+	// received. The result of the function is sent back to the requesting client.
+	// Set it before calling Run; mutating it afterwards races with the request handlers.
 	PageantRequestHandler PageantRequestHandler
 }
 
@@ -30,7 +39,7 @@ func NewDefaultHandler(openSSHPipe string, enablePageantPipe bool) *Pageant {
 // Configure the pageant with the given options if provided, otherwise use defaults
 func NewWithOptions(opts ...Option) *Pageant {
 	// initialize with defaults
-	p := New(`\\.\pipe\openssh-ssh-agent`, true, defaultHandlerFunc)
+	p := New(DefaultSSHAgentPipe, true, defaultHandlerFunc)
 
 	// apply options
 	for _, applyTo := range opts {

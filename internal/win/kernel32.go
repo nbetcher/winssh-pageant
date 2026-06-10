@@ -13,8 +13,6 @@ var (
 	// Functions
 	getLastError    = libkernel32.NewProc("GetLastError")
 	getModuleHandle = libkernel32.NewProc("GetModuleHandleW")
-	globalAlloc     = libkernel32.NewProc("GlobalAlloc")
-	globalFree      = libkernel32.NewProc("GlobalFree")
 	attachConsole   = libkernel32.NewProc("AttachConsole")
 )
 
@@ -34,22 +32,4 @@ func GetModuleHandle(lpModuleName *uint16) HINSTANCE {
 		0)
 
 	return HINSTANCE(ret)
-}
-
-func GlobalAlloc(uFlags uint32, dwBytes uintptr) HGLOBAL {
-	ret, _, _ := syscall.Syscall(globalAlloc.Addr(), 2,
-		uintptr(uFlags),
-		dwBytes,
-		0)
-
-	return HGLOBAL(ret)
-}
-
-func GlobalFree(hMem HGLOBAL) HGLOBAL {
-	ret, _, _ := syscall.Syscall(globalFree.Addr(), 1,
-		uintptr(hMem),
-		0,
-		0)
-
-	return HGLOBAL(ret)
 }

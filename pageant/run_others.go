@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package pageant
 
@@ -8,10 +7,10 @@ import (
 	"log"
 )
 
-var defaultHandlerFunc = func(_ *Pageant, _ []byte) ([]byte, error) {
+func defaultHandlerFunc(_ *Pageant, _ []byte) ([]byte, error) {
 	return nil, errors.New("not supported")
 }
 
 func (p *Pageant) Run() {
-	log.Fatalf("winssh-pageant bridge only supported on Windows")
+	log.Println("winssh-pageant bridge is only supported on Windows")
 }
