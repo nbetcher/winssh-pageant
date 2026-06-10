@@ -6,7 +6,6 @@ Proxy Pageant requests to the Windows OpenSSH agent (from Microsoft), enabling a
 ## Contents
 
 - [Installation](#installation)
-  - [Winget](#winget)
   - [MSI Installer](#msi-installer)
   - [Standalone Binary](#standalone-binary)
 - [Usage](#usage)
@@ -35,15 +34,6 @@ WinSSH-Pageant now features an MSI installer for easy upgrading and install/unin
 ### Prerequisites
 
 Install the [Microsoft OpenSSH package, found on their Github](https://github.com/PowerShell/Win32-OpenSSH/releases). Do not install this using Windows update, that one is quite outdated, and will not work with this software. [Follow the instructions for adding OpenSSH to your System PATH.](https://github.com/PowerShell/Win32-OpenSSH/wiki/Install-Win32-OpenSSH-Using-MSI)
-
-## Winget
-
-This application is now available in the offcial [Microsoft Package Manager: `winget`](https://github.com/microsoft/winget-cli) and is the *preferred* way to install and upgrade this software.
-
-| Action | Command |
-| -----: |-------- |
-| Install | `winget install winssh-pageant` |
-| Upgrade | `winget upgrade winssh-pageant` |
 
 ## MSI Installer
 
