@@ -63,6 +63,10 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    # Needed to create the release/tag and call the generate-notes API;
+    # the default GITHUB_TOKEN is read-only.
+    permissions:
+      contents: write
     steps:
 
     - name: Download Binaries
