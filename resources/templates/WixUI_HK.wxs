@@ -30,6 +30,8 @@
             <![CDATA[WIXUI_INSTALLDIR_VALID<>"1"]]>
          </Publish>
 
+         <!-- Launch the app when the user closes the wizard (full-UI installs). -->
+         <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication" Order="998">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed</Publish>
          <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
 
          <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" {{if gt (.License | len) 0}} Value="LicenseAgreementDlg_HK" {{else}} Value="InstallDirDlg" {{end}}>NOT Installed</Publish>

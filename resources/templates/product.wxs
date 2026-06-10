@@ -16,6 +16,9 @@
         <Property Id="ALLUSERS" Secure="yes" Value="2"/>
         <Property Id="MSIINSTALLPERUSER" Secure="yes" Value="1" />
         <Property Id="LAUNCH_APP" Hidden="no" Secure="yes">1</Property>
+        <!-- Exit-dialog "Launch" checkbox (shown on full-UI installs, checked by default). -->
+        <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch WinSSH-Pageant" />
+        <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
 
         <Media Id="1" Cabinet="product.cab" EmbedCab="yes" />
 
@@ -93,7 +96,10 @@
         <InstallExecuteSequence>
             <RemoveExistingProducts After="InstallValidate" />
             <Custom Action="AppKill" Before="InstallValidate">REMOVE OR REINSTALL</Custom>
-            <Custom Action="LaunchApplication" After="InstallFinalize">((NOT Installed OR REINSTALL) AND NOT REMOVE) AND (<![CDATA[LAUNCH_APP="true" OR LAUNCH_APP=1]]>)</Custom>
+            <!-- Silent/basic installs have no Exit dialog, so launch at the end of the sequence.
+                 Full-UI installs (UILevel 5) launch from the Finish button instead (see WixUI_HK)
+                 to avoid launching twice. -->
+            <Custom Action="LaunchApplication" After="InstallFinalize">((NOT Installed OR REINSTALL) AND NOT REMOVE) AND (<![CDATA[(LAUNCH_APP="true" OR LAUNCH_APP=1) AND UILevel<5]]>)</Custom>
 
             {{range $i, $e := .InstallHooks}}
             <Custom Action="CustomInstallExec{{$i}}" After="{{if eq $i 0}}InstallFiles{{else}}CustomInstallExec{{dec $i}}{{end}}">NOT Installed AND NOT REMOVE</Custom>
