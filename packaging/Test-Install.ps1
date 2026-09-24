@@ -80,6 +80,15 @@ if (!(Get-Process -Name explorer -ErrorAction SilentlyContinue)) {
     while (!(Get-Process -Name explorer -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
 }
 Assert-Install ($null -ne (Get-Process -Name explorer -ErrorAction SilentlyContinue)) 'An interactive Explorer shell is required for the tray/launch smoke test.'
+$desktopShells = @(Get-Process -Name explorer | Where-Object { $_.SessionId -eq (Get-Process -Id $PID).SessionId })
+Assert-Install ($desktopShells.Count -gt 0) 'An Explorer shell in the test session is required.'
+$shellElevated = [InstallerSmokeSecurity]::IsElevated($desktopShells[0].Id)
+foreach ($desktopShell in $desktopShells) {
+    Assert-Install ([InstallerSmokeSecurity]::IsElevated($desktopShell.Id) -eq $shellElevated) 'Explorer processes have inconsistent privilege levels.'
+}
+if ($shellElevated) {
+    Write-Warning 'This desktop shell is elevated (for example, a built-in Administrator CI account). Checking launch privileges match the shell; unelevated launch requires separate testing on a normal user desktop.'
+}
 
 $installed = $false
 try {
@@ -101,7 +110,7 @@ try {
         if ($running.Count -eq 0) { Start-Sleep -Milliseconds 250 }
     } while ($running.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
     Assert-Install ($running.Count -eq 1) 'Installation did not automatically start exactly one application instance.'
-    Assert-Install (![InstallerSmokeSecurity]::IsElevated($running[0].Id)) 'Post-install application launch was elevated.'
+    Assert-Install ([InstallerSmokeSecurity]::IsElevated($running[0].Id) -eq $shellElevated) 'Post-install application privileges differ from the desktop shell.'
     # Repair must stop/restart the same installation without a duplicate process.
     Invoke-Msi @('/fa', $productCode, '/qn', '/norestart', '/L*v', ('"' + (Join-Path $logDirectory 'repair.log') + '"'))
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -110,7 +119,7 @@ try {
         if ($running.Count -eq 0) { Start-Sleep -Milliseconds 250 }
     } while ($running.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
     Assert-Install ($running.Count -eq 1) 'Repair did not restart exactly one application instance.'
-    Assert-Install (![InstallerSmokeSecurity]::IsElevated($running[0].Id)) 'Post-repair application launch was elevated.'
+    Assert-Install ([InstallerSmokeSecurity]::IsElevated($running[0].Id) -eq $shellElevated) 'Post-repair application privileges differ from the desktop shell.'
 } finally {
     if ($installed) {
         Invoke-Msi @('/x', $productCode, '/qn', '/norestart', '/L*v', ('"' + (Join-Path $logDirectory 'uninstall.log') + '"'))
