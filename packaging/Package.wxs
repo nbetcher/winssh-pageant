@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <?if $(sys.BUILDARCH) = x86 ?>
+    <?define AppComponentGuid = "7D974129-6B1B-4E81-885A-21955DABBB9C" ?>
+  <?elseif $(sys.BUILDARCH) = arm64 ?>
+    <?define AppComponentGuid = "391EE48C-3A26-44E0-837B-DB23536B57A6" ?>
+  <?else ?>
+    <?define AppComponentGuid = "96FD291B-8356-43C4-B1C5-70F9D709E25C" ?>
+  <?endif ?>
+  <Package Name="WinSSH-Pageant" Manufacturer="Nick Betcher" Version="$(var.ProductVersion)"
+      UpgradeCode="307F134F-BAE2-4610-9F8F-6A7C7DDB3980" Language="1033" Scope="perUser" InstallerVersion="500">
+    <SummaryInformation Description="Windows OpenSSH to Pageant agent bridge" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of WinSSH-Pageant is already installed."
+        AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <!-- VersionNT deliberately reports 603 on Windows 10/11. Read the actual major version. -->
+    <Property Id="WINDOWSMAJORVERSION">
+      <RegistrySearch Id="WindowsMajorVersion" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+          Name="CurrentMajorVersionNumber" Type="raw" />
+    </Property>
+    <Launch Condition="Installed OR WINDOWSMAJORVERSION = &quot;#10&quot;" Message="WinSSH-Pageant requires Windows 10 or Windows 11." />
+    <Property Id="EXISTINGAPP">
+      <RegistrySearch Id="InstalledDirectory" Root="HKCU" Key="Software\WinSSH-Pageant" Name="InstallDirectory" Type="directory">
+        <FileSearch Id="ExistingExecutable" Name="winssh-pageant.exe" />
+      </RegistrySearch>
+    </Property>
+    <!-- Remember the chosen path for maintenance and later major upgrades. -->
+    <Property Id="INSTALLDIR">
+      <RegistrySearch Id="PreviousInstallDirectory" Root="HKCU" Key="Software\WinSSH-Pageant" Name="InstallDirectory" Type="raw" />
+    </Property>
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/nbetcher/winssh-pageant" />
+    <Property Id="ARPPRODUCTICON" Value="ApplicationIcon" />
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize" />
+    <Property Id="REBOOT" Value="ReallySuppress" />
+    <Property Id="LAUNCHAPP" Value="1" Secure="yes" />
+    <Icon Id="ApplicationIcon" SourceFile="$(var.RepoDir)\resources\icon\icon.ico" />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLDIR" Name="WinSSH-Pageant">
+          <Component Id="Application" Guid="$(var.AppComponentGuid)">
+            <File Id="ApplicationExe" Source="$(var.SourceDir)\winssh-pageant.exe" />
+            <File Id="Readme" Source="$(var.SourceDir)\README.md" />
+            <File Id="Review" Source="$(var.SourceDir)\REVIEW.md" />
+            <File Id="License" Source="$(var.SourceDir)\LICENSE" />
+            <File Id="ThirdPartyNotices" Source="$(var.SourceDir)\THIRD_PARTY_NOTICES.txt" />
+            <RegistryValue Root="HKCU" Key="Software\WinSSH-Pageant" Name="InstallDirectory" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
+            <RemoveFolder Id="RemoveInstallDirectory" On="uninstall" />
+            <RemoveFolder Id="RemoveProgramsDirectory" Directory="ProgramsFolder" On="uninstall" />
+          </Component>
+          <Component Id="Startup" Guid="*">
+            <!-- Task Manager/Settings own StartupApproved. Do not reset it on upgrades. -->
+            <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="WinSSH-Pageant"
+                Value="&quot;[#ApplicationExe]&quot;" Type="string" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="*">
+        <Shortcut Id="StartMenuShortcut" Name="WinSSH-Pageant" Description="Windows OpenSSH to Pageant agent bridge"
+            Target="[#ApplicationExe]" WorkingDirectory="INSTALLDIR" Icon="ApplicationIcon" />
+        <RegistryValue Root="HKCU" Key="Software\WinSSH-Pageant" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Main" Title="WinSSH-Pageant" Level="1">
+      <ComponentRef Id="Application" /><ComponentRef Id="Startup" /><ComponentRef Id="StartMenu" />
+    </Feature>
+    <!-- The app validates process identity and waits. Never kill by image name. -->
+    <CustomAction Id="StopApplication" FileRef="ApplicationExe" ExeCommand="--exit" Execute="immediate" Return="check" Impersonate="yes" />
+    <Property Id="WixUnelevatedShellExecTarget" Value="[#ApplicationExe]" />
+    <CustomAction Id="LaunchApplication" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixUnelevatedShellExec"
+        Execute="immediate" Return="ignore" Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="StopApplication" Before="InstallValidate" Condition="Installed AND EXISTINGAPP AND (REMOVE OR REINSTALL)" />
+      <Custom Action="LaunchApplication" After="InstallFinalize" Condition="NOT REMOVE AND LAUNCHAPP = 1" />
+    </InstallExecuteSequence>
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.RepoDir)\packaging\license.rtf" />
+  </Package>
+</Wix>

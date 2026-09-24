@@ -25,3 +25,5 @@ resources/*.msi
 resources/*.syso
 
 testing/
+.tools/
+*.syso

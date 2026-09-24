@@ -1,97 +1,134 @@
-name: Go Release
+name: Release
 
 on:
+  push:
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       releaseVersion:
-        description: 'Release Version'
-        required: true
+        description: 'Version matching VERSION; leave empty to use VERSION'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.releaseVersion || 'manual' }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build
     runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
     steps:
-
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: go.mod
-      id: go
-
-    # https://github.com/felixrieseberg/electron-wix-msi/issues/1#issuecomment-674598795
-    # https://docs.github.com/en/free-pro-team@latest/actions/reference/workflow-commands-for-github-actions#adding-a-system-path
-    # https://stackoverflow.com/a/64831469
-    # https://github.community/t/set-path-for-wix-toolset-in-windows-runner/154708
-    - name: Set WiX Toolset path for candle and light
-      run: echo "C:\Program Files (x86)\WiX Toolset v3.11\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-    - name: Install UPX
-      run: |
-        Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip" -OutFile "upx.zip";
-        $fileInfo = Expand-Archive -Path "upx.zip" -DestinationPath "./" -PassThru -Force;
-        $upxPath = $fileInfo[0].Directory;
-        Write-Output "$upxPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append;
-
-    - name: Get dependencies
-      run: go get -v -t -d ./...
-
-    - name: goversioninfo install
-      run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
-    - name: go-msi install
-      run: go install github.com/mh-cbon/go-msi@latest
-
-    - name: Release Build
-      run: .\build.ps1 -release -ver ${{ github.event.inputs.releaseVersion }}
-      shell: pwsh
-
-    - name: Upload checksums
-      uses: actions/upload-artifact@v4
-      with:
-        name: checksums
-        path: checksums.md
-
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: release
-        path: release/
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release version and tag target
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.releaseVersion }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: ./packaging/Prepare-Release.ps1 -Version $env:RELEASE_VERSION -Tag $env:RELEASE_TAG -ExpectedCommit $env:RELEASE_COMMIT -OutputFile $env:GITHUB_OUTPUT
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and vet
+        shell: pwsh
+        run: |
+          go test -count=1 ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet -unsafeptr=false ./...
+      - name: Build and inspect installers and portable archives
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          ./build.ps1 -Release -ver $env:RELEASE_VERSION -Architectures amd64,arm64,386
+          ./packaging/Test-Package.ps1
+      - name: Install, repair, and uninstall on the disposable runner
+        run: ./packaging/Test-Install.ps1 -IsolatedTestMachine
+      - name: Stage reviewed release notes
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: Copy-Item -LiteralPath "packaging/release-notes/$env:RELEASE_VERSION.md" -Destination release/RELEASE_NOTES.md
+      - name: Save installer lifecycle logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-smoke-logs
+          path: build/installer-smoke/*.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: |
+            release/*.msi
+            release/*.zip
+            release/SHA256SUMS.txt
+            release/RELEASE_NOTES.md
+          if-no-files-found: error
 
   create_release:
-    name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    # Needed to create the release/tag and call the generate-notes API;
-    # the default GITHUB_TOKEN is read-only.
+    timeout-minutes: 10
+    concurrency:
+      group: draft-${{ needs.build.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
-
-    - name: Download Binaries
-      uses: actions/download-artifact@v4
-      with:
-        name: release
-
-    - name: Download Checksums
-      uses: actions/download-artifact@v4
-      with:
-        name: checksums
-
-    - name: Release
-      uses: softprops/action-gh-release@v2
-      with:
-        # The checksums are prepended to GitHub's auto-generated release notes.
-        body_path: checksums.md
-        generate_release_notes: true
-        draft: true
-        name: Release ${{ github.event.inputs.releaseVersion }}
-        tag_name: ${{ github.event.inputs.releaseVersion }}
-        files: |
-          winssh-pageant-${{ github.event.inputs.releaseVersion }}_amd64.zip
-          winssh-pageant-${{ github.event.inputs.releaseVersion }}_386.zip
-          winssh-pageant-${{ github.event.inputs.releaseVersion }}_amd64.msi
-          winssh-pageant-${{ github.event.inputs.releaseVersion }}_386.msi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Recheck tag target
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: ./packaging/Prepare-Release.ps1 -Tag $env:RELEASE_TAG -ExpectedCommit $env:RELEASE_COMMIT
+      - name: Refuse to overwrite a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" > existing-releases.json
+          if jq -se --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag and .draft == false)] | length > 0' existing-releases.json; then
+            echo 'This version is already published. Choose a new version.' >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: release-assets
+      - name: Verify downloaded checksums
+        working-directory: release-assets
+        run: sha256sum --check --strict SHA256SUMS.txt
+      - name: Prepare draft release at the tested commit
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          name: WinSSH-Pageant ${{ needs.build.outputs.version }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ needs.build.outputs.commit }}
+          body_path: release-assets/RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.zip
+            release-assets/*.msi
+            release-assets/SHA256SUMS.txt

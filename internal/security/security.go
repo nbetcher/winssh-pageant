@@ -1,6 +1,8 @@
 package security
 
 import (
+	"fmt"
+
 	"golang.org/x/sys/windows"
 )
 
@@ -12,7 +14,7 @@ func GetUserSID() (*windows.SID, error) {
 		return nil, err
 	}
 
-	return user.User.Sid, nil
+	return copyValidSID(user.User.Sid)
 }
 
 // GetHandleSID Gets SID for the given handle
@@ -27,11 +29,20 @@ func GetHandleSID(h windows.Handle) (*windows.SID, error) {
 		return nil, err
 	}
 
-	return sid, nil
+	return copyValidSID(sid)
 }
 
 // GetDefaultSID Returns the default (Security Identifier) SID for the current user.
 func GetDefaultSID() (*windows.SID, error) {
 	proc := windows.CurrentProcess()
 	return GetHandleSID(proc)
+}
+
+// Return an owned SID instead of retaining a pointer into a token or security
+// descriptor buffer. Reject an absent owner rather than passing nil to EqualSid.
+func copyValidSID(sid *windows.SID) (*windows.SID, error) {
+	if sid == nil || !sid.IsValid() {
+		return nil, fmt.Errorf("security descriptor has no valid SID")
+	}
+	return sid.Copy()
 }

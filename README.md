@@ -1,135 +1,93 @@
+# WinSSH-Pageant
 
-# WinSSH-Pageant ![Go](https://github.com/ndbeals/winssh-pageant/workflows/Go/badge.svg)
+A Windows desktop bridge that lets PuTTY, Plink, WinSCP, and other Pageant-compatible clients use keys held by the Windows OpenSSH authentication agent. Private keys remain in OpenSSH; this application forwards agent requests.
 
-Proxy Pageant requests to the Windows OpenSSH agent (from Microsoft), enabling applications that only support Pageant to use openssh.
+## Install on Windows 10 or 11
 
-## Contents
+Use the MSI matching your machine: `amd64` for Intel/AMD Windows 11, or `arm64` for Windows on ARM. A `386` build is also available for 32-bit Windows 10. ARM64 packages are cross-built and require device qualification.
 
-- [Installation](#installation)
-  - [MSI Installer](#msi-installer)
-  - [Standalone Binary](#standalone-binary)
-- [Usage](#usage)
-  - [Autostart](#autostart)
-- [Frequently Asked Questions](#frequently-asked-questions)
-- [Building](#building)
-  - [Easy Build Instructions](#easy-build-instructions)
-  - [Advanced Build Instructions](#advanced-build-instructions)
-  - [Antivirus Flagging](#antivirus-flagging)
-- [Bug Reporting, Help & Feature Requests](#bug-reporting-help--feature-requests)
-- [Credits](#credits)
+Double-click the MSI and finish setup. It installs for the current user without requiring administrator rights, registers in Installed apps, adds a Start menu shortcut and a startup entry, and launches the application. Disable startup in **Settings > Apps > Startup** or **Task Manager > Startup apps**. Uninstall from Installed apps. Run the bridge without elevation.
 
-## Background
+The MSI retains the existing upgrade family for earlier per-user installations. A machine-wide installation must be removed separately because MSI upgrade detection is context-specific. Some older uninstallers forcibly stop all processes with the application name; close the older copy before upgrading and avoid running multiple portable copies during legacy upgrades.
 
-I use the Windows OpenSSH agent as my single ssh key backing. Many solutions exist that do the opposite of this, but I prefer the convenience of Windows OpenSSH agent.
+Generated packages are unsigned unless a distributor signs them with an Authenticode certificate. Compare the package with its accompanying `SHA256SUMS.txt`; checksums verify integrity, not publisher identity. Never dismiss an antivirus detection solely because an executable was written in Go.
 
-This has been tested on Windows 10 2004 using WSL2. Earlier versions of windows up to 1803 should work too.
+The Windows **OpenSSH Authentication Agent** service must be installed and running. The Windows optional-feature version is supported; a separate OpenSSH download is not required. If the service is disabled, enable it through Windows Services with administrator rights. Load keys using your normal account:
 
-# Installation
-
-WinSSH-Pageant now features an MSI installer for easy upgrading and install/uninstall actions. The installer will:
-
- 1. Create an appropriate, user-specific autostart entry which you can manager from Task Manager -> Startup tab
- 2. Autostart the application after the installer is finished
-
-### Prerequisites
-
-Install the [Microsoft OpenSSH package, found on their Github](https://github.com/PowerShell/Win32-OpenSSH/releases). Do not install this using Windows update, that one is quite outdated, and will not work with this software. [Follow the instructions for adding OpenSSH to your System PATH.](https://github.com/PowerShell/Win32-OpenSSH/wiki/Install-Win32-OpenSSH-Using-MSI)
-
-## MSI Installer
-
-[Download the latest version from the releases page](https://github.com/ndbeals/winssh-pageant/releases/latest) and install it.
-
-### Standalone Binary
-
-For those who do not want an installer, there is also an option to download the compiled, standalone executable. [Download the latest .zip](https://github.com/ndbeals/winssh-pageant/releases/latest) and follow the [instructions for configuring autostart](#autostart)
-
-# Usage
-
-Run the executable `winssh-pageant.exe`. There are two (optional) flags:
-
-- `--sshpipe` - name of the windows openssh agent pipe, default is: `\\.\pipe\openssh-ssh-agent`
-- `--no-pageant-pipe` - disable pageant named pipe proxying
-
-## Autostart
-
-Start Menu Autostart:
-
- 1. Open Windows Explorer and navigate to:
-
-    ```
-    %appdata%\Microsoft\Windows\Start Menu\Programs\Startup
-    ```
-
- 2. Inside this folder, Create a shortcut pointing at wherever you put `winssh-pageant.exe`
- 3. If the shortcut is valid, there should be a new `WinSSH-Pageant Bridge` entry found in Task Manager -> Startup
-
-Note: Task Scheduler autostart method is now deprecated and unsupported. It causes possible issues with executable ownership.
-
----
-
-# Frequently Asked Questions
-
-## How do I add my private keys to pageant?
-You don't. Add your private keys to the standard ssh-agent with the following command:
-```
-ssh-add <your key>
-```
-[Detailed explanation.](https://github.com/ndbeals/winssh-pageant/issues/14)
-
----
-
-## Building
-
-clone the repo:
-
-```
-git clone https://github.com/ndbeals/winssh-pageant.git
-cd winssh-pageant
+```powershell
+ssh-add "$env:USERPROFILE\.ssh\id_ed25519"
+ssh-add -l
 ```
 
-### Easy Build Instructions
+The installer does not change the OpenSSH service or load, delete, or copy keys. Only one Pageant-compatible agent can claim the Pageant window and pipe at a time; exit an existing Pageant or older bridge before launching a portable copy.
 
+## Tray and key window
+
+The application appears as a key/plug icon in the notification area, possibly in the overflow menu. Right-click for **Show SSH keys**, **Signing notifications**, and **Exit**. Double-click also opens the key window. Exit stops the bridge without unloading keys from OpenSSH.
+
+The native window lists the type, SHA256 fingerprint, and comment of every key currently loaded in the configured agent. **Refresh** retrieves the current list. Empty and unavailable/locked-agent states are distinct. Unloaded key files on disk do not appear. The list contains public metadata only.
+
+Signing notifications are enabled by default and can be toggled for the current run. Windows notification settings and Do Not Disturb can suppress them. Notifications report requests passing through this bridge, including refusals. An OpenSSH client using the Windows agent directly bypasses the bridge and cannot trigger these notifications.
+
+### Notification attribution
+
+The standard agent protocol supplies a public key and data to sign; it does **not** carry the destination hostname or TCP port. An SSH authentication payload normally includes the requested username. Generic signatures, such as commit signatures, may have no SSH destination.
+
+Windows supplies the process ID for named-pipe clients. Legacy `WM_COPYDATA` callers often supply no sender window; their conventional mapping-name thread ID can provide an **inferred** identity. Explicit SSH-client command-line destinations or a unique established TCP endpoint can provide an **inferred** destination. Inaccessible, ambiguous, forwarded, proxied, and unsupported connections display unavailable details. These labels are informational, not authorization decisions or proof that a server accepted authentication.
+
+No private keys, signed payloads, full command lines, or notification history are written to disk. Connection details can be visible to someone looking at your screen.
+
+## Command line
+
+```text
+winssh-pageant.exe [--sshpipe \\.\pipe\openssh-ssh-agent] [--no-pageant-pipe]
+winssh-pageant.exe --show-keys
+winssh-pageant.exe --exit
+winssh-pageant.exe --version
 ```
-go build -ldflags="-w -s -H=windowsgui" -trimpath
+
+`--sshpipe` selects another **local** pipe; remote SMB pipes are rejected. `--no-pageant-pipe` leaves legacy shared-memory IPC enabled. `--show-keys` opens the existing instance's window, or starts the application and opens it. `--exit` closes only an instance belonging to the same user at this exact executable path; it never kills by process name.
+
+A portable ZIP contains the executable, README, and license. To start it at login, place a shortcut in the current user's `shell:startup` folder. Avoid a duplicate startup entry when using the MSI.
+
+## Security boundary
+
+The bridge follows the usual agent trust model: applications running as your Windows user can ask the agent to sign. Notifications are not approval prompts. The bridge forwards agent operations, including key-management operations, rather than imposing a confirmation policy. Use agent/key constraints and separate accounts when you need stronger isolation.
+
+The Pageant pipe has a protected current-user-only ACL, rejects remote clients, bounds concurrent connections and incomplete-frame time, and validates framing. Legacy mappings must be owned by the current user and carry a bounded, terminated name. Requests are copied before forwarding. Requests and replies have allocation limits and deadlines; the UI remains responsive while legacy signing waits.
+
+Each named-pipe client retains its own upstream connection so OpenSSH session-binding state survives across requests. Transport errors retire that session rather than reconnecting without its security state. Legacy shared-memory requests lack a persistent connection identity and explicitly reject the OpenSSH session-binding extension. The upstream agent ultimately determines supported algorithms and key constraints.
+
+See [REVIEW.md](REVIEW.md) for review findings, verification evidence, and qualification limits.
+
+## Build and verify
+
+Prerequisites: Go matching `go.mod`, and .NET 8 SDK for MSI packaging. Downloads require network access. The build installs pinned resource/WiX tools under `.tools`, embeds the existing application icon and a Windows compatibility/DPI manifest, and preserves output in `build` and `release`.
+
+```powershell
+go test ./...
+go vet -unsafeptr=false ./...
+$env:WINSSH_DESKTOP_TEST = '1'
+go test ./pageant -run TestDesktopNativeSmoke -count=1
+$env:WINSSH_DESKTOP_TEST = $null
+.\build.ps1 -Release -Architectures amd64,arm64,386
+.\packaging\Test-Package.ps1
 ```
 
-### Advanced Build Instructions
+The vet pointer check is excluded for Win32 callback and mapping pointer boundaries; all other vet checks stay enabled. Native smoke tests briefly create a separate tray icon and popup without claiming production Pageant endpoints.
 
-The build script `build.ps1` accepts numerous, optional flags and two dev dependencies. Install the dev dependencies:
+With a compatible C compiler available, also run `go test -race ./...` with `CGO_ENABLED=1`. This review passed the full race-enabled suite and native desktop tests using LLVM Clang on Windows 11, without disabling runtime pointer checks.
 
-```
-go install github.com/josephspurrier/goversioninfo@latest
-go install github.com/mh-cbon/go-msi@latest
-```
+The default build targets `amd64` and `arm64`. `-ver 2.4.1` overrides `VERSION`. Release packaging emits MSI, ZIP, and SHA256 checksums and fails on resource, compiler, or packaging errors. Plain `go build` is useful for development but does not generate icon/manifest resources; use `build.ps1` for distribution.
 
-Run the build script:
+## Release workflow
 
-```
-.\build.ps1 -Release
-```
+The **Go** workflow tests pull requests and pushes to `master`, builds all three MSI/ZIP architectures, inspects the packages, and tests installation, repair, and uninstall on its disposable Windows runner. Successful runs retain the packages and checksums as the `windows-packages` artifact; installer logs are retained even on failure.
 
-The release flag is *optional*, though highly recommended, if it is omitted you do not need the two aforementioned dev dependencies.
+For a release, update `VERSION` and add reviewed notes at `packaging/release-notes/<version>.md`, then commit the changes. Run **Release** manually on that commit's branch (the optional version must match `VERSION`), or push a tag named `v<version>`. Both paths validate the version and any existing tag, build and test that exact commit, verify transferred checksums, and prepare a **draft** GitHub release containing all MSI/ZIP packages and `SHA256SUMS.txt`. A missing tag targets the tested commit explicitly. An existing tag pointing elsewhere or an already published version is rejected.
 
-### Antivirus Flagging
+For this version, the prepared release/tag is `v2.4.1`. Review the successful workflow and draft assets before publishing the draft. Local commits do not run Actions until pushed; creating this configuration does not publish a release or push a tag.
 
-Your antivirus software may flag this as malware, It's a false positive and a known quirk with go binaries (<https://golang.org/doc/faq#virus>). The official releases use reproducible builds via `-trimpath`. The expected checksums are posted with the release they're meant for, some users may choose to build this project themself and confirm the checksums, `sha256sum`.
+## Credits and license
 
-More information can be found here: <https://github.com/ndbeals/winssh-pageant/issues/7#issuecomment-787520972>
-
-## Bug Reporting, Help & Feature Requests
-
-Please put report all
-
-- Feature Requests
-- Bugs
-- Help Requests
-- General Questsions
-
-[as an issue.](https://github.com/ndbeals/winssh-pageant/issues)
-
-## Credits
-
-Big thanks to <https://github.com/benpye/wsl-ssh-pageant>, Ben Pye and the other contributors for the examples of interacting with the win32 api, the build script, and help they have given me directly.
-
-- <https://github.com/buptczq/WinCryptSSHAgent> for a working example of how to open a file mapping another process created.
-- @meilon for reporting an internationalization bug and testing the fix for me.
+Original project by Nathan Beals. Thanks to contributors to [wsl-ssh-pageant](https://github.com/benpye/wsl-ssh-pageant) and [WinCryptSSHAgent](https://github.com/buptczq/WinCryptSSHAgent) for Windows IPC examples. See [LICENSE](LICENSE).

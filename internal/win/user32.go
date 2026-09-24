@@ -1,16 +1,12 @@
 package win
 
 import (
-	"syscall"
-	"unsafe"
-
 	"golang.org/x/sys/windows"
+	"unsafe"
 )
 
 var (
-	// Library
-	libuser32 = windows.NewLazySystemDLL("user32.dll")
-	// Functions
+	libuser32        = windows.NewLazySystemDLL("user32.dll")
 	loadCursor       = libuser32.NewProc("LoadCursorW")
 	loadIcon         = libuser32.NewProc("LoadIconW")
 	getSysColorBrush = libuser32.NewProc("GetSysColorBrush")
@@ -24,120 +20,51 @@ var (
 	findWindow       = libuser32.NewProc("FindWindowW")
 )
 
-func MAKEINTRESOURCE(id uintptr) *uint16 {
-	return (*uint16)(unsafe.Pointer(id))
+func MAKEINTRESOURCE(id uintptr) *uint16 { return (*uint16)(unsafe.Pointer(id)) }
+func LoadCursor(instance HINSTANCE, name *uint16) HCURSOR {
+	r, _, _ := loadCursor.Call(uintptr(instance), uintptr(unsafe.Pointer(name)))
+	return HCURSOR(r)
 }
-
-func LoadCursor(hInstance HINSTANCE, lpCursorName *uint16) HCURSOR {
-	ret, _, _ := syscall.Syscall(loadCursor.Addr(), 2,
-		uintptr(hInstance),
-		uintptr(unsafe.Pointer(lpCursorName)),
-		0)
-
-	return HCURSOR(ret)
+func LoadIcon(instance HINSTANCE, name *uint16) HICON {
+	r, _, _ := loadIcon.Call(uintptr(instance), uintptr(unsafe.Pointer(name)))
+	return HICON(r)
 }
-
-func LoadIcon(hInstance HINSTANCE, lpIconName *uint16) HICON {
-	ret, _, _ := syscall.Syscall(loadIcon.Addr(), 2,
-		uintptr(hInstance),
-		uintptr(unsafe.Pointer(lpIconName)),
-		0)
-
-	return HICON(ret)
+func GetSysColorBrush(index int) HBRUSH {
+	r, _, _ := getSysColorBrush.Call(uintptr(index))
+	return HBRUSH(r)
 }
-
-func GetSysColorBrush(nIndex int) HBRUSH {
-	ret, _, _ := syscall.Syscall(getSysColorBrush.Addr(), 1,
-		uintptr(nIndex),
-		0,
-		0)
-
-	return HBRUSH(ret)
-}
-
-func RegisterClassEx(windowClass *WNDCLASSEX) ATOM {
-	ret, _, _ := syscall.Syscall(registerClassEx.Addr(), 1,
-		uintptr(unsafe.Pointer(windowClass)),
-		0,
-		0)
-
-	return ATOM(ret)
+func RegisterClassEx(class *WNDCLASSEX) ATOM {
+	r, _, _ := registerClassEx.Call(uintptr(unsafe.Pointer(class)))
+	return ATOM(r)
 }
 
 //revive:disable:line-length-limit,argument-limit
-func CreateWindowEx(dwExStyle uint32, lpClassName, lpWindowName *uint16, dwStyle uint32, x, y, nWidth, nHeight int32, hWndParent HWND, hMenu HMENU, hInstance HINSTANCE, lpParam unsafe.Pointer) HWND {
-	ret, _, _ := syscall.Syscall12(createWindowEx.Addr(), 12,
-		uintptr(dwExStyle),
-		uintptr(unsafe.Pointer(lpClassName)),
-		uintptr(unsafe.Pointer(lpWindowName)),
-		uintptr(dwStyle),
-		uintptr(x),
-		uintptr(y),
-		uintptr(nWidth),
-		uintptr(nHeight),
-		uintptr(hWndParent),
-		uintptr(hMenu),
-		uintptr(hInstance),
-		uintptr(lpParam))
-
-	return HWND(ret)
+func CreateWindowEx(exStyle uint32, class, title *uint16, style uint32, x, y, width, height int32, parent HWND, menu HMENU, instance HINSTANCE, param unsafe.Pointer) HWND {
+	r, _, _ := createWindowEx.Call(uintptr(exStyle), uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), uintptr(style), uintptr(x), uintptr(y), uintptr(width), uintptr(height), uintptr(parent), uintptr(menu), uintptr(instance), uintptr(param))
+	return HWND(r)
+}
+func DefWindowProc(hwnd HWND, msg uint32, wp, lp uintptr) uintptr {
+	r, _, _ := defWindowProc.Call(uintptr(hwnd), uintptr(msg), wp, lp)
+	return r
 }
 
-func DefWindowProc(hWnd HWND, msg uint32, wParam, lParam uintptr) uintptr {
-	ret, _, _ := syscall.Syscall6(defWindowProc.Addr(), 4,
-		uintptr(hWnd),
-		uintptr(msg),
-		wParam,
-		lParam,
-		0,
-		0)
-
-	return ret
+// LazyProc.Call has Go's uintptrescapes annotation. Native calls can invoke Go
+// callbacks and grow the goroutine stack; pointers retained across those calls
+// must escape to stable storage. Direct SyscallN does not provide that contract.
+func GetMessage(msg *MSG, hwnd HWND, filterMin, filterMax uint32) BOOL {
+	r, _, _ := getMessage.Call(uintptr(unsafe.Pointer(msg)), uintptr(hwnd), uintptr(filterMin), uintptr(filterMax))
+	return BOOL(r)
 }
-
-func GetMessage(msg *MSG, hWnd HWND, msgFilterMin, msgFilterMax uint32) BOOL {
-	ret, _, _ := syscall.SyscallN(
-		getMessage.Addr(),
-		uintptr(unsafe.Pointer(msg)),
-		uintptr(hWnd),
-		uintptr(msgFilterMin),
-		uintptr(msgFilterMax),
-		0,
-		0)
-
-	return BOOL(ret)
-}
-
 func TranslateMessage(msg *MSG) bool {
-	ret, _, _ := syscall.Syscall(translateMessage.Addr(), 1,
-		uintptr(unsafe.Pointer(msg)),
-		0,
-		0)
-
-	return ret != 0
+	r, _, _ := translateMessage.Call(uintptr(unsafe.Pointer(msg)))
+	return r != 0
 }
-
 func DispatchMessage(msg *MSG) uintptr {
-	ret, _, _ := syscall.Syscall(dispatchMessage.Addr(), 1,
-		uintptr(unsafe.Pointer(msg)),
-		0,
-		0)
-
-	return ret
+	r, _, _ := dispatchMessage.Call(uintptr(unsafe.Pointer(msg)))
+	return r
 }
-
-func PostQuitMessage(exitCode int32) {
-	syscall.Syscall(postQuitMessage.Addr(), 1,
-		uintptr(exitCode),
-		0,
-		0)
-}
-
-func FindWindow(lpClassName, lpWindowName *uint16) HWND {
-	ret, _, _ := syscall.Syscall(findWindow.Addr(), 2,
-		uintptr(unsafe.Pointer(lpClassName)),
-		uintptr(unsafe.Pointer(lpWindowName)),
-		0)
-
-	return HWND(ret)
+func PostQuitMessage(code int32) { postQuitMessage.Call(uintptr(code)) }
+func FindWindow(class, title *uint16) HWND {
+	r, _, _ := findWindow.Call(uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)))
+	return HWND(r)
 }

@@ -14,15 +14,16 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       # gofmt is build-tag agnostic; vet targets the (bulk) Windows build.
       GOOS: windows
     steps:
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -37,12 +38,13 @@ jobs:
   build:
     name: Build & Test
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -55,7 +57,38 @@ jobs:
       # Run revive via the toolchain installed above (a pinned Docker action
       # would bundle its own, possibly older, Go that cannot load this module).
       - name: Run Revive
-        run: go run github.com/mgechev/revive@latest -config resources/revive.toml ./...
+        run: go run github.com/mgechev/revive@v1.17.0 -config resources/revive.toml ./...
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and inspect installers
+        shell: pwsh
+        run: |
+          ./build.ps1 -Release -Architectures amd64,arm64,386
+          ./packaging/Test-Package.ps1
+
+      - name: Install, repair, and uninstall on the disposable runner
+        run: ./packaging/Test-Install.ps1 -IsolatedTestMachine
+
+      - name: Save installer lifecycle logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-smoke-logs
+          path: build/installer-smoke/*.log
+          if-no-files-found: ignore
+
+      - name: Save tested installation packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-packages
+          path: |
+            release/*.msi
+            release/*.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
 
       - name: Vet & compile-check non-Windows build
         # The pageant package also has a //go:build !windows variant (run_others.go).

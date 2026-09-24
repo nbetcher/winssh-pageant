@@ -1,102 +1,213 @@
+//go:build windows
+
 package openssh
 
 import (
+	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
+	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 )
 
 const (
-	// AgentMaxMessageLength is the maximum length of a request sent to the agent.
-	AgentMaxMessageLength = 1<<14 - 1 // 16383
-	// AgentMaxResponseLength bounds the agent's reply. Replies (e.g. an
-	// identities-answer listing many keys) are legitimately far larger than a
-	// request, so they must not be limited to AgentMaxMessageLength; 256 KiB
-	// matches the ssh-agent protocol's practical maximum message size while
-	// still rejecting a malformed/hostile size that would otherwise allocate
-	// gigabytes.
+	// AgentMaxMessageLength includes the four-byte length prefix. This limit
+	// also bounds requests received over Pageant's shared-memory transport.
+	AgentMaxMessageLength = 1<<14 - 1
+	// AgentMaxResponseLength bounds the reply payload, excluding its prefix.
+	// Key lists may be larger than requests; never trust the agent's length.
 	AgentMaxResponseLength      = 256 * 1024
-	SSH_AGENT_FAIL         byte = 0x05
+	SSH_AGENT_FAIL         byte = 5
+
+	agentConnectTimeout  = 2 * time.Second
+	agentWriteTimeout    = 2 * time.Second
+	agentResponseTimeout = 60 * time.Second
 )
 
-// genericFailResponse returns a fresh SSH_AGENT_FAILURE reply. A new slice is
-// allocated on every call so callers can never mutate a shared sentinel.
+// genericFailResponse returns an independently owned SSH_AGENT_FAILURE frame.
 func genericFailResponse() []byte {
-	return []byte{0x00, 0x00, 0x00, 0x01, SSH_AGENT_FAIL}
+	return []byte{0, 0, 0, 1, SSH_AGENT_FAIL}
 }
 
-// QueryAgent provides a way to query the named windows openssh agent pipe
-func QueryAgent(pipeName string, buf []byte) (result []byte, err error) {
-	if len(buf) > AgentMaxMessageLength {
-		fmt.Println("message too long")
-		return genericFailResponse(), nil
+// QueryAgent forwards one complete, length-prefixed request to a local Windows
+// OpenSSH agent. Operational and malformed-message failures return both a valid
+// failure frame and a non-nil error. An agent's own refusal is a normal reply.
+// No request contents or key material are logged here.
+func QueryAgent(pipeName string, request []byte) ([]byte, error) {
+	if ValidateRequest(request) == nil && isSessionBind(request) {
+		return genericFailResponse(), fmt.Errorf("session binding requires a persistent agent connection")
 	}
+	session := NewSession(pipeName)
+	defer func() { _ = session.Close() }()
+	return session.Query(request)
+}
 
-	conn, err := winio.DialPipe(pipeName, nil)
-	if err != nil {
-		fmt.Printf("cannot connect to pipe %s: %s\n", pipeName, err.Error())
-		return genericFailResponse(), nil
+// Session keeps one upstream agent connection for one downstream pipe client.
+// Agent extensions such as session-bind@openssh.com attach security state to
+// that connection. A failed connection is never silently reconnected.
+type Session struct {
+	queryMu  sync.Mutex
+	stateMu  sync.Mutex
+	pipeName string
+	conn     net.Conn
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closed   bool
+}
+
+// NewSession creates a lazily connected session. Its owner must call Close.
+func NewSession(pipeName string) *Session {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Session{pipeName: pipeName, ctx: ctx, cancel: cancel}
+}
+
+// Query exchanges one framed request. Calls are serialized in wire order;
+// Close may run concurrently and interrupts an in-progress connect or read.
+func (s *Session) Query(request []byte) ([]byte, error) {
+	s.queryMu.Lock()
+	defer s.queryMu.Unlock()
+	if err := ValidateRequest(request); err != nil {
+		return genericFailResponse(), fmt.Errorf("invalid agent request: %w", err)
 	}
-	defer conn.Close()
-	// If the agent needs the user to do something, give them time to do so, but don't wait forever.
-	conn.SetDeadline(time.Now().Add(time.Second * 2))
-
-	_, err = conn.Write(buf)
-	if err != nil {
-		fmt.Printf("cannot write ssh client request to agent pipe %s: %s\n", pipeName, err.Error())
-		return genericFailResponse(), nil
+	if !localPipeName(s.pipeName) {
+		return genericFailResponse(), fmt.Errorf("agent pipe must be a local \\\\.\\pipe\\ name")
 	}
-
-	conn.SetDeadline(time.Now().Add(time.Second * 60)) // Update deadline
-	// <https://github.com/openssh/openssh-portable/blob/4e636cf/PROTOCOL.agent>
-	// first 4 bytes are messageSizeBuf uint32
-	messageSizeBuf := make([]byte, 4)
-	_, err = io.ReadFull(conn, messageSizeBuf)
-	if err != nil {
-		switch {
-		case errors.Is(err, winio.ErrTimeout):
-			fmt.Printf("Timeout waiting for user input %s: %s\n", pipeName, err.Error())
-		default:
-			fmt.Printf("Cannot read message size from pipe %s: %s\n", pipeName, err.Error())
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return genericFailResponse(), fmt.Errorf("OpenSSH agent session is closed")
+	}
+	conn := s.conn
+	s.stateMu.Unlock()
+	if conn == nil {
+		ctx, cancel := context.WithTimeout(s.ctx, agentConnectTimeout)
+		var err error
+		conn, err = winio.DialPipeContext(ctx, s.pipeName)
+		cancel()
+		if err != nil {
+			_ = s.Close()
+			return genericFailResponse(), fmt.Errorf("connect to OpenSSH agent: %w", err)
 		}
-		return genericFailResponse(), nil
+		s.stateMu.Lock()
+		if s.closed {
+			s.stateMu.Unlock()
+			_ = conn.Close()
+			return genericFailResponse(), fmt.Errorf("OpenSSH agent session is closed")
+		}
+		s.conn = conn
+		s.stateMu.Unlock()
 	}
-	messageSize := binary.BigEndian.Uint32(messageSizeBuf)
-
-	// The reply must hold at least the type byte and must not exceed the
-	// protocol maximum. A zero size would also underflow the messageContents
-	// allocation below, and an unbounded size would allocate up to ~4 GiB.
-	// Note this bounds the REPLY (AgentMaxResponseLength), not the request.
-	if messageSize < 1 || messageSize > AgentMaxResponseLength {
-		fmt.Printf("invalid message size %d from pipe %s\n", messageSize, pipeName)
-		return genericFailResponse(), nil
-	}
-
-	// next byte is the reply type code
-	replyCode := make([]byte, 1)
-	_, err = io.ReadFull(conn, replyCode)
+	reply, err := exchange(conn, request)
 	if err != nil {
-		fmt.Printf("Cannot read message type from pipe %s: %s\n", pipeName, err.Error())
-		return genericFailResponse(), nil
+		_ = s.Close()
 	}
-	if replyCode[0] == SSH_AGENT_FAIL {
-		return append(messageSizeBuf, replyCode...), nil
+	return reply, err
+}
+
+// Close prevents further queries and releases the upstream pipe.
+func (s *Session) Close() error {
+	s.stateMu.Lock()
+	if s.closed {
+		s.stateMu.Unlock()
+		return nil
 	}
-
-	// https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent-04#section-3
-	messageContents := make([]byte, messageSize-1)
-	_, err = io.ReadFull(conn, messageContents)
-	if err != nil {
-		fmt.Printf("cannot read message contents from pipe %s: %s\n", pipeName, err.Error())
-		return genericFailResponse(), nil
+	s.closed = true
+	s.cancel()
+	conn := s.conn
+	s.conn = nil
+	s.stateMu.Unlock()
+	if conn != nil {
+		return conn.Close()
 	}
+	return nil
+}
 
-	concatResults := append(messageSizeBuf, replyCode...)
-	concatResults = append(concatResults, messageContents...)
+func isSessionBind(request []byte) bool {
+	if request[4] != 27 {
+		return false
+	} // SSH_AGENTC_EXTENSION
+	remaining := request[5:]
+	name, ok := takeString(&remaining)
+	return ok && string(name) == "session-bind@openssh.com"
+}
 
-	return concatResults, nil
+func localPipeName(name string) bool {
+	lower := strings.ToLower(name)
+	return (strings.HasPrefix(lower, `\\.\pipe\`) || strings.HasPrefix(lower, `\\?\pipe\`)) &&
+		len(name) > len(`\\.\pipe\`) && !strings.ContainsRune(name, 0)
+}
+
+// ValidateRequest checks the complete framed request before forwarding it.
+func ValidateRequest(frame []byte) error {
+	return validateFrame(frame, AgentMaxMessageLength-4)
+}
+
+// ValidateResponse checks the complete framed reply before forwarding it.
+func ValidateResponse(frame []byte) error {
+	if err := validateFrame(frame, AgentMaxResponseLength); err != nil {
+		return err
+	}
+	if frame[4] == SSH_AGENT_FAIL && len(frame) != 5 {
+		return fmt.Errorf("malformed agent failure reply")
+	}
+	return nil
+}
+
+func validateFrame(frame []byte, maxPayload int) error {
+	if len(frame) < 5 {
+		return fmt.Errorf("message must include a length and type")
+	}
+	if len(frame)-4 > maxPayload {
+		return fmt.Errorf("message exceeds %d bytes", maxPayload)
+	}
+	if binary.BigEndian.Uint32(frame[:4]) != uint32(len(frame)-4) {
+		return fmt.Errorf("message length does not match its frame")
+	}
+	return nil
+}
+
+func exchange(conn net.Conn, request []byte) ([]byte, error) {
+	fail := func(operation string, err error) ([]byte, error) {
+		return genericFailResponse(), fmt.Errorf("%s: %w", operation, err)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(agentWriteTimeout)); err != nil {
+		return fail("set agent write deadline", err)
+	}
+	for remaining := request; len(remaining) > 0; {
+		n, err := conn.Write(remaining)
+		if err != nil {
+			return fail("write agent request", err)
+		}
+		if n <= 0 || n > len(remaining) {
+			return fail("write agent request", io.ErrShortWrite)
+		}
+		remaining = remaining[n:]
+	}
+	// Hardware-backed keys may need user interaction. The deadline covers the
+	// entire reply, so a peer cannot keep a goroutine alive by trickling bytes.
+	if err := conn.SetReadDeadline(time.Now().Add(agentResponseTimeout)); err != nil {
+		return fail("set agent read deadline", err)
+	}
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return fail("read agent reply length", err)
+	}
+	payloadLength := binary.BigEndian.Uint32(header[:])
+	if payloadLength == 0 || payloadLength > AgentMaxResponseLength {
+		return genericFailResponse(), fmt.Errorf("invalid agent reply length %d", payloadLength)
+	}
+	reply := make([]byte, 4+int(payloadLength))
+	copy(reply, header[:])
+	if _, err := io.ReadFull(conn, reply[4:]); err != nil {
+		return fail("read agent reply", err)
+	}
+	if err := ValidateResponse(reply); err != nil {
+		return genericFailResponse(), err
+	}
+	return reply, nil
 }

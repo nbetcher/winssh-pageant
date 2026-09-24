@@ -11,6 +11,9 @@ const DefaultSSHAgentPipe = `\\.\pipe\openssh-ssh-agent`
 type PageantRequestHandler func(p *Pageant, request []byte) ([]byte, error)
 
 type Pageant struct {
+	state *runtimeState
+	// ShowKeysOnStart opens the public-key viewer after startup.
+	ShowKeysOnStart bool
 	// SSHAgentPipe is the pipe for the windows openssh agent (e.g \\.\pipe\openssh-ssh-agent).
 	// Set it before calling Run; mutating it afterwards races with the request handlers.
 	SSHAgentPipe string

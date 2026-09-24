@@ -1,68 +1,49 @@
 package win
 
 import (
-	"fmt"
+	"errors"
+	"golang.org/x/sys/windows"
 	"log"
 	"os"
-	"syscall"
-
-	"golang.org/x/sys/windows"
+	"sync"
 )
 
+var consoleOnce sync.Once
+var consoleError error
+
+// Keep Go's original wrappers alive: their finalizers must not close handles
+// that AttachConsole installs for the parent console.
+var originalOutput, originalError *os.File
+
 func AttachConsole() error {
-	r1, _, err := attachConsole.Call(ATTACH_PARENT_PROCESS)
-	if r1 == 0 {
-		errno, ok := err.(syscall.Errno)
-		if ok && errno == ERROR_INVALID_HANDLE {
-			// console handle doesn't exist; not a real error, but the console handle will be invalid.
-			return nil
-		}
-		return err
+	r, _, err := attachConsole.Call(ATTACH_PARENT_PROCESS)
+	if r != 0 || errors.Is(err, windows.ERROR_INVALID_HANDLE) || errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return nil
 	}
-	return nil
+	return err
 }
 
-var oldStdout *os.File
-
 func FixConsoleIfNeeded() error {
-	// Keep old os.Stdout reference so it dont get GC'd and cleaned up
-	// You never want to close file descriptors 0, 1, and 2.
-	oldStdout = os.Stdout
-	stdout, _ := syscall.GetStdHandle(syscall.STD_OUTPUT_HANDLE)
-
-	var invalid syscall.Handle
-	con := invalid
-
-	if stdout == invalid {
-		err := AttachConsole()
-		if err != nil {
-			return fmt.Errorf("attachconsole: %v", err)
+	consoleOnce.Do(func() {
+		originalOutput, originalError = os.Stdout, os.Stderr
+		stdout, _ := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+		stderr, _ := windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+		valid := func(h windows.Handle) bool { return h != 0 && h != windows.InvalidHandle }
+		if !valid(stdout) && !valid(stderr) {
+			consoleError = AttachConsole()
 		}
-		if stdout == invalid {
-			stdout, _ = syscall.GetStdHandle(syscall.STD_OUTPUT_HANDLE)
-			con = stdout
+		// Preserve redirected output supplied by a shell/installer.
+		if !valid(stdout) {
+			if h, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE); err == nil && valid(h) {
+				os.Stdout = os.NewFile(uintptr(h), "stdout")
+			}
 		}
-	}
-
-	if con != invalid {
-		// Make sure the console is configured to convert
-		// \n to \r\n, like Go programs expect.
-		h := windows.Handle(con)
-		var st uint32
-		err := windows.GetConsoleMode(h, &st)
-		if err != nil {
-			return fmt.Errorf("GetConsoleMode: %v", err)
+		if !valid(stderr) {
+			if h, err := windows.GetStdHandle(windows.STD_ERROR_HANDLE); err == nil && valid(h) {
+				os.Stderr = os.NewFile(uintptr(h), "stderr")
+			}
 		}
-		err = windows.SetConsoleMode(h, st&^windows.DISABLE_NEWLINE_AUTO_RETURN)
-		if err != nil {
-			return fmt.Errorf("SetConsoleMode: %v", err)
-		}
-	}
-
-	if stdout != invalid {
-		os.Stdout = os.NewFile(uintptr(stdout), "stdout")
-	}
-
-	log.SetOutput(os.Stdout)
-	return nil
+		log.SetOutput(os.Stderr)
+	})
+	return consoleError
 }
