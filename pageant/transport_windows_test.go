@@ -191,8 +191,17 @@ func TestUserOnlyPipeAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	user, _ := security.GetUserSID()
-	want := "D:P(A;;FA;;;" + user.String() + ")"
+	user, err := security.GetUserSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Normalize both descriptors: Windows abbreviates well-known account SIDs
+	// (including the hosted runner's local Administrator account) in SDDL.
+	expected, err := windows.SecurityDescriptorFromString("D:P(A;;FA;;;" + user.String() + ")")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := expected.String()
 	if sd.String() != want {
 		t.Fatalf("pipe ACL %s want %s", sd.String(), want)
 	}

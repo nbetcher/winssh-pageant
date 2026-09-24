@@ -54,9 +54,11 @@ jobs:
       - name: Test
         run: go test -v ./...
 
-      # Run revive via the toolchain installed above (a pinned Docker action
-      # would bundle its own, possibly older, Go that cannot load this module).
+      # Revive requires a newer compiler than the application's minimum Go.
+      # Allow toolchain selection only for this pinned lint tool.
       - name: Run Revive
+        env:
+          GOTOOLCHAIN: auto
         run: go run github.com/mgechev/revive@v1.17.0 -config resources/revive.toml ./...
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
